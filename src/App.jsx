@@ -775,6 +775,80 @@ export default function App() {
     loadTrades();
   }, [session]);
 
+  const toSnake = (trade) => ({
+    user_id:             session.user.id,
+    date:                trade.date,
+    instrument:          trade.instrument,
+    session:             trade.session,
+    lot_size:            trade.lotSize,
+    daily_bias:          trade.dailyBias,
+    four_hr_bias:        trade.fourHrBias,
+    key_level:           trade.keyLevel,
+    liquidity_target:    trade.liquidityTarget,
+    trend_1h:            trade.trend1h,
+    trend_30m:           trade.trend30m,
+    trend_15m:           trade.trend15m,
+    direction:           trade.direction,
+    entry_trigger:       trade.entryTrigger,
+    entry_price:         trade.entryPrice,
+    stop_loss:           trade.stopLoss,
+    take_profit:         trade.takeProfit,
+    emotional_state:     trade.emotionalState,
+    all_aligned:         trade.allAligned,
+    at_key_level:        trade.atKeyLevel,
+    signal_not_feelings: trade.signalNotFeelings,
+    hit_daily_limit:     trade.hitDailyLimit,
+    chasing_loss:        trade.chasingLoss,
+    exit_price:          trade.exitPrice,
+    result:              trade.result,
+    pnl:                 trade.pnl,
+    exit_type:           trade.exitType,
+    followed_plan:       trade.followedPlan,
+    extended_tp:         trade.extendedTP,
+    moved_sl:            trade.movedSL,
+    discipline_score:    String(trade.disciplineScore || ""),
+    went_well:           trade.wentWell,
+    went_wrong:          trade.wentWrong,
+    doing_differently:   trade.doingDifferently,
+  });
+
+  const toCamel = (t) => ({
+    id:                t.id,
+    date:              t.date,
+    instrument:        t.instrument,
+    session:           t.session,
+    lotSize:           t.lot_size,
+    dailyBias:         t.daily_bias,
+    fourHrBias:        t.four_hr_bias,
+    keyLevel:          t.key_level,
+    liquidityTarget:   t.liquidity_target,
+    trend1h:           t.trend_1h,
+    trend30m:          t.trend_30m,
+    trend15m:          t.trend_15m,
+    direction:         t.direction,
+    entryTrigger:      t.entry_trigger,
+    entryPrice:        t.entry_price,
+    stopLoss:          t.stop_loss,
+    takeProfit:        t.take_profit,
+    emotionalState:    t.emotional_state,
+    allAligned:        t.all_aligned,
+    atKeyLevel:        t.at_key_level,
+    signalNotFeelings: t.signal_not_feelings,
+    hitDailyLimit:     t.hit_daily_limit,
+    chasingLoss:       t.chasing_loss,
+    exitPrice:         t.exit_price,
+    result:            t.result,
+    pnl:               t.pnl,
+    exitType:          t.exit_type,
+    followedPlan:      t.followed_plan,
+    extendedTP:        t.extended_tp,
+    movedSL:           t.moved_sl,
+    disciplineScore:   t.discipline_score,
+    wentWell:          t.went_well,
+    wentWrong:         t.went_wrong,
+    doingDifferently:  t.doing_differently,
+  });
+
   const loadTrades = async () => {
     setLoading(true);
     const { data, error } = await supabase
@@ -782,21 +856,22 @@ export default function App() {
       .select("*")
       .eq("user_id", session.user.id)
       .order("date", { ascending: false });
-    if (!error) setTrades(data || []);
+    if (!error) setTrades((data || []).map(toCamel));
     setLoading(false);
   };
 
   const handleSave = async (trade) => {
-    const payload = { ...trade, user_id: session.user.id };
-    if (trades.find(t => t.id === trade.id)) {
-      await supabase.from("trades").update(payload).eq("id", trade.id);
+    const payload = toSnake(trade);
+    if (trade.id && trades.find(t => t.id === trade.id)) {
+      const { error } = await supabase.from("trades").update(payload).eq("id", trade.id);
+      if (error) { alert("Error saving: " + error.message); return; }
     } else {
-      const { data } = await supabase.from("trades").insert([{ ...payload, id: undefined }]).select();
-      if (data) setTrades(prev => [...prev, data[0]]);
-      setEditTrade(null); setTab("trades"); return;
+      const { error } = await supabase.from("trades").insert([payload]);
+      if (error) { alert("Error saving: " + error.message); return; }
     }
-    setTrades(prev => prev.map(t => t.id === trade.id ? { ...payload } : t));
-    setEditTrade(null); setTab("trades");
+    await loadTrades();
+    setEditTrade(null);
+    setTab("trades");
   };
 
   const handleDelete = async (id) => {
