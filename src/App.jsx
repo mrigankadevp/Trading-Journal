@@ -16,6 +16,7 @@ const defaultForm = {
   followedPlan: "", extendedTP: "", movedSL: "",
   wentWell: "", wentWrong: "", doingDifferently: "",
   disciplineScore: "",
+  chartUrl: "",
 };
 
 const BIASES = ["Bullish", "Bearish", "Ranging"];
@@ -168,6 +169,73 @@ function Divider({ label }) {
     </div>
   );
 }
+/* ── Screenshot Upload ──────────────────────────────────────────────── */
+function ScreenshotUpload({ value, onChange, tradeId }) {
+  const [uploading, setUploading] = useState(false);
+  const [preview, setPreview] = useState(value || null);
+  const [lightbox, setLightbox] = useState(false);
+
+  const handleFile = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) { alert("Image must be under 5MB"); return; }
+    setUploading(true);
+    const ext = file.name.split(".").pop();
+    const path = `charts/${tradeId || Date.now()}_${Date.now()}.${ext}`;
+    const { error } = await supabase.storage.from("trade-charts").upload(path, file, { upsert: true });
+    if (error) { alert("Upload failed: " + error.message); setUploading(false); return; }
+    const { data } = supabase.storage.from("trade-charts").getPublicUrl(path);
+    setPreview(data.publicUrl);
+    onChange(data.publicUrl);
+    setUploading(false);
+  };
+
+  const handleRemove = () => { setPreview(null); onChange(""); };
+
+  return (
+    <div>
+      {!preview ? (
+        <label style={{
+          display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+          gap: 8, padding: "20px 16px", borderRadius: 10, cursor: "pointer",
+          border: `2px dashed ${C.border}`, background: C.bg,
+          transition: "border-color 0.15s",
+        }}>
+          <span style={{ fontSize: 28 }}>📸</span>
+          <span style={{ fontSize: 13, color: C.textMuted, fontFamily: "'Outfit',sans-serif", fontWeight: 500 }}>
+            {uploading ? "Uploading..." : "Tap to upload chart screenshot"}
+          </span>
+          <span style={{ fontSize: 11, color: C.textMuted, fontFamily: "'Outfit',sans-serif" }}>PNG, JPG up to 5MB</span>
+          <input type="file" accept="image/*" onChange={handleFile} style={{ display: "none" }} disabled={uploading} />
+        </label>
+      ) : (
+        <div style={{ position: "relative" }}>
+          <img
+            src={preview} alt="Chart screenshot"
+            onClick={() => setLightbox(true)}
+            style={{ width: "100%", borderRadius: 10, border: `1px solid ${C.border}`, cursor: "zoom-in", maxHeight: 220, objectFit: "cover" }}
+          />
+          <button onClick={handleRemove} style={{
+            position: "absolute", top: 8, right: 8, width: 28, height: 28, borderRadius: "50%",
+            background: "rgba(0,0,0,0.7)", border: "none", color: "#fff",
+            cursor: "pointer", fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center",
+          }}>✕</button>
+          <div style={{ marginTop: 6, fontSize: 11, color: C.textMuted, fontFamily: "'Outfit',sans-serif" }}>Click image to view full size</div>
+        </div>
+      )}
+      {lightbox && (
+        <div onClick={() => setLightbox(false)} style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.92)", zIndex: 9999,
+          display: "flex", alignItems: "center", justifyContent: "center", padding: 16, cursor: "zoom-out",
+        }}>
+          <img src={preview} alt="Chart" style={{ maxWidth: "100%", maxHeight: "90vh", borderRadius: 10, boxShadow: "0 20px 60px rgba(0,0,0,0.8)" }} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 
 function StatCard({ label, value, sub, color }) {
   return (
@@ -411,6 +479,10 @@ function TradeForm({ onSave, editTrade, onCancelEdit }) {
         <Field label="What went well?"><Textarea value={form.wentWell} onChange={v => sf("wentWell", v)} placeholder="What did you execute correctly?" /></Field>
         <Field label="What went wrong?"><Textarea value={form.wentWrong} onChange={v => sf("wentWrong", v)} placeholder="Where did you deviate from the plan?" /></Field>
         <Field label="What would I do differently?"><Textarea value={form.doingDifferently} onChange={v => sf("doingDifferently", v)} placeholder="Specific improvement for next time..." /></Field>
+        <Divider label="Chart Screenshot" />
+        <Field label="Exit Chart">
+          <ScreenshotUpload value={form.chartUrl} onChange={v => sf("chartUrl", v)} tradeId={form.id} />
+        </Field>
       </Card>
 
       <div style={{ display: "flex", gap: 10 }}>
@@ -434,6 +506,15 @@ function TradeForm({ onSave, editTrade, onCancelEdit }) {
 }
 
 /* ── Analytics Helpers ──────────────────────────────────────────────── */
+function getWeek(dateStr) {
+  const d = new Date(dateStr);
+  const jan4 = new Date(d.getFullYear(), 0, 4);
+  const start = new Date(jan4); start.setDate(jan4.getDate() - ((jan4.getDay() + 6) % 7));
+  return `${d.getFullYear()}-W${String(Math.floor((d - start) / (7 * 86400000)) + 1).padStart(2, "0")}`;
+}
+function getMonth(d) { return d.slice(0, 7); }
+function groupBy(arr, fn) { const m = {}; arr.forEach(t => { const k = fn(t); if (!m[k]) m[k] = []; m[k].push(t); }); return m; }
+
 function WinRateBar({ label, wr, n, color }) {
   const pct = parseInt(wr) || 0;
   return (
@@ -449,46 +530,219 @@ function WinRateBar({ label, wr, n, color }) {
   );
 }
 
-function PeriodTable({ rows, columns }) {
+/* ── Big Stat Tile ───────────────────────────────────────────────────── */
+function BigStat({ label, value, sub, color, icon }) {
   return (
-    <div style={{ overflowX: "auto" }}>
-      <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "'Outfit',sans-serif", fontSize: 12 }}>
-        <thead>
-          <tr>{columns.map(c => <th key={c} style={{ textAlign: c === columns[0] ? "left" : "right", padding: "6px 8px", color: C.textMuted, fontWeight: 600, fontSize: 10.5, letterSpacing: 0.5, textTransform: "uppercase", borderBottom: `1px solid ${C.border}` }}>{c}</th>)}</tr>
-        </thead>
-        <tbody>
-          {rows.map((row, i) => (
-            <tr key={i} style={{ borderBottom: `1px solid ${C.border}20` }}>
-              {row.map((cell, j) => {
-                const isNum = j > 0 && typeof cell === "number";
-                const col = isNum ? (cell >= 0 ? C.green : C.red) : C.textSub;
-                const display = isNum ? `${cell >= 0 ? "+" : ""}${cell.toFixed(2)}` : cell;
-                return <td key={j} style={{ padding: "8px 8px", textAlign: j > 0 ? "right" : "left", color: isNum ? col : C.textSub, fontWeight: isNum ? 600 : 400 }}>{display}</td>;
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div style={{
+      background: C.card, borderRadius: 14, border: `1px solid ${C.border}`,
+      padding: "14px 16px", position: "relative", overflow: "hidden",
+      boxShadow: "0 4px 20px rgba(0,0,0,0.3)",
+    }}>
+      <div style={{ position: "absolute", top: -12, right: -12, width: 60, height: 60, borderRadius: "50%", background: `${color}10` }} />
+      <div style={{ fontSize: 18, marginBottom: 4 }}>{icon}</div>
+      <div style={{ fontSize: 10, color: C.textMuted, fontFamily: "'Outfit',sans-serif", fontWeight: 600, letterSpacing: 0.8, textTransform: "uppercase", marginBottom: 5 }}>{label}</div>
+      <div style={{ fontSize: 20, fontWeight: 800, color, fontFamily: "'Outfit',sans-serif", letterSpacing: -0.5, lineHeight: 1 }}>{value}</div>
+      {sub && <div style={{ fontSize: 11, color: C.textMuted, fontFamily: "'Outfit',sans-serif", marginTop: 4 }}>{sub}</div>}
     </div>
   );
 }
 
-function getWeek(dateStr) {
-  const d = new Date(dateStr);
-  const jan4 = new Date(d.getFullYear(), 0, 4);
-  const start = new Date(jan4); start.setDate(jan4.getDate() - ((jan4.getDay() + 6) % 7));
-  return `${d.getFullYear()}-W${String(Math.floor((d - start) / (7 * 86400000)) + 1).padStart(2, "0")}`;
+/* ── Calendar View ───────────────────────────────────────────────────── */
+function CalendarView({ trades, onDayClick }) {
+  const [calYear, setCalYear] = useState(new Date().getFullYear());
+  const [calMonth, setCalMonth] = useState(new Date().getMonth());
+
+  const byDay = {};
+  trades.forEach(t => {
+    if (!byDay[t.date]) byDay[t.date] = { pnl: 0, count: 0, wins: 0 };
+    byDay[t.date].pnl += parseFloat(t.pnl) || 0;
+    byDay[t.date].count++;
+    if (t.result === "Win") byDay[t.date].wins++;
+  });
+
+  const firstDay = new Date(calYear, calMonth, 1);
+  const daysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
+  const startDow = (firstDay.getDay() + 6) % 7; // Mon=0
+  const monthStr = firstDay.toLocaleString("default", { month: "long", year: "numeric" });
+
+  const cells = [];
+  for (let i = 0; i < startDow; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+
+  const prevMonth = () => { if (calMonth === 0) { setCalYear(y => y - 1); setCalMonth(11); } else setCalMonth(m => m - 1); };
+  const nextMonth = () => { if (calMonth === 11) { setCalYear(y => y + 1); setCalMonth(0); } else setCalMonth(m => m + 1); };
+
+  // Weekly P&L sidebar
+  const weeks = [];
+  let week = [];
+  cells.forEach((d, i) => {
+    week.push(d);
+    if (week.length === 7 || i === cells.length - 1) {
+      const weekPnl = week.filter(Boolean).reduce((a, d) => {
+        const key = `${calYear}-${String(calMonth + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+        return a + (byDay[key]?.pnl || 0);
+      }, 0);
+      weeks.push({ days: [...week], pnl: weekPnl });
+      week = [];
+    }
+  });
+
+  const DOW = ["M", "T", "W", "T", "F", "S", "S"];
+
+  return (
+    <Card style={{ padding: "16px" }}>
+      {/* Header */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+        <button onClick={prevMonth} style={{ background: C.border, border: "none", color: C.textSub, width: 28, height: 28, borderRadius: 7, cursor: "pointer", fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center" }}>‹</button>
+        <span style={{ fontSize: 14, fontWeight: 700, color: C.text, fontFamily: "'Outfit',sans-serif" }}>{monthStr}</span>
+        <button onClick={nextMonth} style={{ background: C.border, border: "none", color: C.textSub, width: 28, height: 28, borderRadius: 7, cursor: "pointer", fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center" }}>›</button>
+      </div>
+
+      <div style={{ display: "flex", gap: 8 }}>
+        {/* Calendar grid */}
+        <div style={{ flex: 1 }}>
+          {/* Day headers */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 3, marginBottom: 4 }}>
+            {DOW.map((d, i) => (
+              <div key={i} style={{ textAlign: "center", fontSize: 10, color: C.textMuted, fontFamily: "'Outfit',sans-serif", fontWeight: 600, padding: "2px 0" }}>{d}</div>
+            ))}
+          </div>
+          {/* Day cells */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 3 }}>
+            {cells.map((day, i) => {
+              if (!day) return <div key={i} />;
+              const key = `${calYear}-${String(calMonth + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+              const data = byDay[key];
+              const pnl = data?.pnl || 0;
+              const isToday = key === new Date().toISOString().split("T")[0];
+              const col = pnl > 0 ? C.green : pnl < 0 ? C.red : null;
+              return (
+                <div key={i} onClick={() => data && onDayClick(key)}
+                  style={{
+                    borderRadius: 7, padding: "5px 3px", textAlign: "center", minHeight: 46,
+                    background: data ? (pnl >= 0 ? `${C.green}18` : `${C.red}18`) : C.bg,
+                    border: `1px solid ${isToday ? C.accent + "60" : data ? (pnl >= 0 ? C.green + "30" : C.red + "30") : C.border}`,
+                    cursor: data ? "pointer" : "default",
+                    transition: "all 0.12s",
+                  }}>
+                  <div style={{ fontSize: 10, color: isToday ? C.accent : C.textMuted, fontFamily: "'Outfit',sans-serif", fontWeight: isToday ? 700 : 400, marginBottom: 2 }}>{day}</div>
+                  {data && (
+                    <>
+                      <div style={{ fontSize: 9.5, fontWeight: 700, color: col, fontFamily: "'Outfit',sans-serif", lineHeight: 1.2 }}>
+                        {pnl >= 0 ? "+" : ""}{pnl.toFixed(0)}
+                      </div>
+                      <div style={{ fontSize: 8.5, color: C.textMuted, fontFamily: "'Outfit',sans-serif" }}>{data.count}t</div>
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Weekly sidebar */}
+        <div style={{ width: 56, display: "flex", flexDirection: "column", gap: 3, paddingTop: 22 }}>
+          {weeks.map((w, i) => (
+            <div key={i} style={{
+              minHeight: 46, borderRadius: 7, padding: "5px 4px", textAlign: "center",
+              background: w.pnl > 0 ? `${C.green}12` : w.pnl < 0 ? `${C.red}12` : C.bg,
+              border: `1px solid ${w.pnl > 0 ? C.green + "25" : w.pnl < 0 ? C.red + "25" : C.border}`,
+              display: "flex", flexDirection: "column", justifyContent: "center",
+            }}>
+              <div style={{ fontSize: 8.5, color: C.textMuted, fontFamily: "'Outfit',sans-serif", marginBottom: 2 }}>Wk {i + 1}</div>
+              <div style={{ fontSize: 9.5, fontWeight: 700, color: w.pnl >= 0 ? C.green : C.red, fontFamily: "'Outfit',sans-serif", lineHeight: 1.2 }}>
+                {w.pnl !== 0 ? `${w.pnl >= 0 ? "+" : ""}${w.pnl.toFixed(0)}` : "—"}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Legend */}
+      <div style={{ display: "flex", gap: 14, marginTop: 10, justifyContent: "center" }}>
+        {[[C.green, "Profit day"], [C.red, "Loss day"], [C.accent, "Today"]].map(([c, l]) => (
+          <div key={l} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <div style={{ width: 8, height: 8, borderRadius: 2, background: c, opacity: 0.7 }} />
+            <span style={{ fontSize: 10, color: C.textMuted, fontFamily: "'Outfit',sans-serif" }}>{l}</span>
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
 }
-function getMonth(d) { return d.slice(0, 7); }
-function groupBy(arr, fn) { const m = {}; arr.forEach(t => { const k = fn(t); if (!m[k]) m[k] = []; m[k].push(t); }); return m; }
-function periodStats(ts, dep = 1000) {
-  const pnl = ts.reduce((a, t) => a + (parseFloat(t.pnl) || 0), 0);
-  return { pnl: parseFloat(pnl.toFixed(2)), wins: ts.filter(t => t.result === "Win").length, count: ts.length, pct: parseFloat(((pnl / dep) * 100).toFixed(2)) };
+
+/* ── Day Detail Modal ────────────────────────────────────────────────── */
+function DayModal({ date, trades, onClose }) {
+  const pnl = trades.reduce((a, t) => a + (parseFloat(t.pnl) || 0), 0);
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", zIndex: 9999, display: "flex", alignItems: "flex-end", justifyContent: "center", padding: 16 }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: C.card, borderRadius: 18, border: `1px solid ${C.border}`, width: "100%", maxWidth: 440, maxHeight: "70vh", overflow: "auto", padding: 20 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: C.text, fontFamily: "'Outfit',sans-serif" }}>{date}</div>
+            <div style={{ fontSize: 13, color: pnl >= 0 ? C.green : C.red, fontFamily: "'Outfit',sans-serif", fontWeight: 600 }}>{pnl >= 0 ? "+" : ""}{pnl.toFixed(2)} AUD · {trades.length} trade{trades.length !== 1 ? "s" : ""}</div>
+          </div>
+          <button onClick={onClose} style={{ background: C.border, border: "none", color: C.textSub, width: 32, height: 32, borderRadius: 8, cursor: "pointer", fontSize: 16 }}>✕</button>
+        </div>
+        {trades.map(t => {
+          const tp = parseFloat(t.pnl) || 0;
+          const col = t.result === "Win" ? C.green : t.result === "Loss" ? C.red : C.amber;
+          return (
+            <div key={t.id} style={{ background: C.bg, borderRadius: 10, border: `1px solid ${C.border}`, borderLeft: `3px solid ${col}`, padding: "10px 14px", marginBottom: 8 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <span style={{ fontSize: 12.5, fontWeight: 700, color: C.accent, fontFamily: "'Outfit',sans-serif" }}>{t.instrument}</span>
+                  {t.direction && <span style={{ fontSize: 11, marginLeft: 8, color: t.direction === "Long" ? C.green : C.red, fontFamily: "'Outfit',sans-serif" }}>{t.direction}</span>}
+                  {t.session && <span style={{ fontSize: 11, marginLeft: 8, color: C.textMuted, fontFamily: "'Outfit',sans-serif" }}>{t.session}</span>}
+                </div>
+                <span style={{ fontSize: 15, fontWeight: 800, color: col, fontFamily: "'Outfit',sans-serif" }}>{tp >= 0 ? "+" : ""}{tp.toFixed(2)}</span>
+              </div>
+              {t.entryTrigger && <div style={{ fontSize: 11, color: C.textMuted, fontFamily: "'Outfit',sans-serif", marginTop: 4 }}>{t.entryTrigger}</div>}
+              {t.chartUrl && <img src={t.chartUrl} alt="chart" style={{ width: "100%", borderRadius: 7, marginTop: 8, maxHeight: 140, objectFit: "cover" }} />}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ── Recent Trades List ──────────────────────────────────────────────── */
+function RecentTradesList({ trades, onEdit }) {
+  const recent = [...trades].sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 8);
+  return (
+    <Card style={{ padding: "16px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: C.text, fontFamily: "'Outfit',sans-serif" }}>Recent Trades</span>
+        <span style={{ fontSize: 11, color: C.textMuted, fontFamily: "'Outfit',sans-serif" }}>Last {recent.length}</span>
+      </div>
+      {recent.map(t => {
+        const pnl = parseFloat(t.pnl) || 0;
+        const col = t.result === "Win" ? C.green : t.result === "Loss" ? C.red : C.amber;
+        return (
+          <div key={t.id} onClick={() => onEdit(t)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 0", borderBottom: `1px solid ${C.border}20`, cursor: "pointer" }}>
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <div style={{ width: 3, height: 32, borderRadius: 2, background: col, flexShrink: 0 }} />
+              <div>
+                <div style={{ fontSize: 12.5, fontWeight: 700, color: C.text, fontFamily: "'Outfit',sans-serif" }}>{t.instrument || "—"}</div>
+                <div style={{ fontSize: 11, color: C.textMuted, fontFamily: "'Outfit',sans-serif" }}>{t.date} · {t.session || t.direction || "—"}</div>
+              </div>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontSize: 13.5, fontWeight: 800, color: col, fontFamily: "'Outfit',sans-serif" }}>{pnl >= 0 ? "+" : ""}{pnl.toFixed(2)}</div>
+              <div style={{ fontSize: 10, color: C.textMuted, fontFamily: "'Outfit',sans-serif" }}>AUD</div>
+            </div>
+          </div>
+        );
+      })}
+    </Card>
+  );
 }
 
 /* ── Analytics ──────────────────────────────────────────────────────── */
-function Analytics({ trades }) {
-  const [periodTab, setPeriodTab] = useState("day");
+function Analytics({ trades, onEditTrade, accountSize }) {
+  const [dayModal, setDayModal] = useState(null);
+  const [section, setSection] = useState("dashboard");
 
   if (!trades.length) return (
     <div style={{ textAlign: "center", padding: 80, color: C.textMuted, fontFamily: "'Outfit', sans-serif" }}>
@@ -498,209 +752,348 @@ function Analytics({ trades }) {
     </div>
   );
 
+  const deposit = parseFloat(accountSize) || 1000;
   const sorted = [...trades].sort((a, b) => new Date(a.date) - new Date(b.date));
-  const totalDeposit = 1000;
-  const wins = trades.filter(t => t.result === "Win").length;
-  const losses = trades.filter(t => t.result === "Loss").length;
-  const wr = ((wins / trades.length) * 100).toFixed(1);
+  const wins = trades.filter(t => t.result === "Win");
+  const losses = trades.filter(t => t.result === "Loss");
+  const wr = ((wins.length / trades.length) * 100).toFixed(1);
   const totalPnl = trades.reduce((a, t) => a + (parseFloat(t.pnl) || 0), 0);
-  const wT = trades.filter(t => t.result === "Win"), lT = trades.filter(t => t.result === "Loss");
-  const avgWin = wT.length ? (wT.reduce((a, t) => a + (parseFloat(t.pnl) || 0), 0) / wT.length).toFixed(2) : 0;
-  const avgLoss = lT.length ? (lT.reduce((a, t) => a + (parseFloat(t.pnl) || 0), 0) / lT.length).toFixed(2) : 0;
+  const isProfit = totalPnl >= 0;
+  const avgWin = wins.length ? wins.reduce((a, t) => a + (parseFloat(t.pnl) || 0), 0) / wins.length : 0;
+  const avgLoss = losses.length ? Math.abs(losses.reduce((a, t) => a + (parseFloat(t.pnl) || 0), 0) / losses.length) : 0;
+  const profitFactor = avgLoss > 0 ? (avgWin * wins.length / (avgLoss * losses.length)).toFixed(2) : wins.length > 0 ? "∞" : "0";
+  const expectancy = trades.length ? ((parseFloat(wr) / 100 * avgWin) - ((1 - parseFloat(wr) / 100) * avgLoss)).toFixed(2) : 0;
   const ds = trades.filter(t => t.disciplineScore);
   const avgDisc = ds.length ? (ds.reduce((a, t) => a + Number(t.disciplineScore), 0) / ds.length).toFixed(1) : "—";
-  const isProfit = totalPnl >= 0;
+  const streak = (() => {
+    let s = 0, cur = 0, prev = null;
+    [...sorted].reverse().forEach(t => {
+      if (prev === null) { cur = t.result === "Win" ? 1 : -1; }
+      else if ((t.result === "Win") === (prev === "Win")) { cur = cur > 0 ? cur + 1 : cur - 1; }
+      else { if (s === 0) s = cur; cur = t.result === "Win" ? 1 : -1; }
+      prev = t.result;
+    });
+    return s === 0 ? cur : s;
+  })();
 
+  // Equity curve
   let cum = 0;
   const cumData = sorted.map((t, i) => { cum += parseFloat(t.pnl) || 0; return { name: `#${i + 1}`, cum: parseFloat(cum.toFixed(2)) }; });
 
+  // Daily data
   const byDayMap = groupBy(sorted, t => t.date);
   let peak = 0, runningPnl = 0;
   const dailyData = Object.entries(byDayMap).sort().map(([date, ts]) => {
     const pnl = ts.reduce((a, t) => a + (parseFloat(t.pnl) || 0), 0);
     runningPnl += pnl; if (runningPnl > peak) peak = runningPnl;
-    const dd = peak > 0 ? parseFloat(((runningPnl - peak) / totalDeposit * 100).toFixed(2)) : 0;
+    const dd = peak > 0 ? parseFloat(((runningPnl - peak) / deposit * 100).toFixed(2)) : 0;
     return { date: date.slice(5), pnl: parseFloat(pnl.toFixed(2)), dd, count: ts.length };
   });
+  const maxDD = dailyData.length ? Math.min(...dailyData.map(d => d.dd)) : 0;
 
+  // By week/month
   const byWeek = groupBy(sorted, t => getWeek(t.date));
   const byMonth = groupBy(sorted, t => getMonth(t.date));
-  const dayRows = Object.entries(byDayMap).sort().map(([d, ts]) => { const s = periodStats(ts, totalDeposit); return [d, s.pnl, s.pct, s.count, s.wins]; });
-  const weekRows = Object.entries(byWeek).sort().map(([w, ts]) => { const s = periodStats(ts, totalDeposit); return [w, s.pnl, s.pct, s.count, s.wins]; });
-  const monthRows = Object.entries(byMonth).sort().map(([m, ts]) => { const s = periodStats(ts, totalDeposit); return [m, s.pnl, s.pct, s.count, s.wins]; });
 
-  const DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-  const dowMap = {};
-  sorted.forEach(t => { const d = DOW[(new Date(t.date).getDay() + 6) % 7]; if (!dowMap[d]) dowMap[d] = { count: 0, pnl: 0 }; dowMap[d].count++; dowMap[d].pnl += parseFloat(t.pnl) || 0; });
-  const dowData = DOW.filter(d => dowMap[d]).map(d => ({ day: d, count: dowMap[d].count, pnl: parseFloat(dowMap[d].pnl.toFixed(2)) }));
-
-  const sessionMap = {}; sorted.forEach(t => { const s = t.session || "Unknown"; if (!sessionMap[s]) sessionMap[s] = { count: 0, pnl: 0, wins: 0 }; sessionMap[s].count++; sessionMap[s].pnl += parseFloat(t.pnl) || 0; if (t.result === "Win") sessionMap[s].wins++; });
-  const instrMap = {}; sorted.forEach(t => { const s = t.instrument || "Unknown"; if (!instrMap[s]) instrMap[s] = { count: 0, pnl: 0, wins: 0 }; instrMap[s].count++; instrMap[s].pnl += parseFloat(t.pnl) || 0; if (t.result === "Win") instrMap[s].wins++; });
+  // Session/instrument/direction
+  const sessionMap = {}, instrMap = {};
   const dirMap = { Long: { count: 0, pnl: 0, wins: 0 }, Short: { count: 0, pnl: 0, wins: 0 } };
-  sorted.forEach(t => { const d = ["Long", "Short"].includes(t.direction) ? t.direction : null; if (d) { dirMap[d].count++; dirMap[d].pnl += parseFloat(t.pnl) || 0; if (t.result === "Win") dirMap[d].wins++; } });
+  sorted.forEach(t => {
+    const s = t.session || "Unknown";
+    if (!sessionMap[s]) sessionMap[s] = { count: 0, pnl: 0, wins: 0 };
+    sessionMap[s].count++; sessionMap[s].pnl += parseFloat(t.pnl) || 0; if (t.result === "Win") sessionMap[s].wins++;
+    const ins = t.instrument || "Unknown";
+    if (!instrMap[ins]) instrMap[ins] = { count: 0, pnl: 0, wins: 0 };
+    instrMap[ins].count++; instrMap[ins].pnl += parseFloat(t.pnl) || 0; if (t.result === "Win") instrMap[ins].wins++;
+    const d = ["Long", "Short"].includes(t.direction) ? t.direction : null;
+    if (d) { dirMap[d].count++; dirMap[d].pnl += parseFloat(t.pnl) || 0; if (t.result === "Win") dirMap[d].wins++; }
+  });
   const alignedT = trades.filter(t => t.allAligned === "Yes"), notAlignedT = trades.filter(t => t.allAligned === "No");
   const allEmotions = [...new Set(trades.map(t => t.emotionalState).filter(Boolean))];
-  const emotionStats = {}; allEmotions.forEach(e => { const et = trades.filter(t => t.emotionalState === e); emotionStats[e] = { n: et.length, wr: ((et.filter(t => t.result === "Win").length / et.length) * 100).toFixed(0) }; });
+  const emotionStats = {};
+  allEmotions.forEach(e => { const et = trades.filter(t => t.emotionalState === e); emotionStats[e] = { n: et.length, wr: ((et.filter(t => t.result === "Win").length / et.length) * 100).toFixed(0) }; });
   const chasing = trades.filter(t => t.chasingLoss === "Yes"), extended = trades.filter(t => t.extendedTP === "Yes");
-  const maxDD = Math.min(...dailyData.map(d => d.dd));
-  const worstDay = dailyData.reduce((a, d) => d.pnl < a.pnl ? d : a, dailyData[0]);
+
+  const sections = [
+    { id: "dashboard", label: "Dashboard", icon: "📊" },
+    { id: "charts", label: "Charts", icon: "📈" },
+    { id: "breakdown", label: "Breakdown", icon: "🔍" },
+    { id: "psychology", label: "Psychology", icon: "🧠" },
+  ];
 
   return (
     <div style={{ paddingBottom: 40 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
-        <StatCard label="Total P&L" value={`${isProfit ? "+" : ""}${totalPnl.toFixed(2)}`} sub="AUD" color={isProfit ? C.green : C.red} />
-        <StatCard label="Win Rate" value={`${wr}%`} sub={`${wins}W · ${losses}L`} color={parseFloat(wr) >= 50 ? C.green : C.red} />
-        <StatCard label="Avg Win" value={`+${avgWin}`} sub="AUD per win" color={C.green} />
-        <StatCard label="Avg Loss" value={`${avgLoss}`} sub="AUD per loss" color={C.red} />
-        <StatCard label="Max Daily DD" value={`${maxDD.toFixed(1)}%`} sub={`Worst: ${worstDay?.date} (${worstDay?.pnl >= 0 ? "+" : ""}${worstDay?.pnl} AUD)`} color={C.red} />
-        <StatCard label="Discipline" value={avgDisc} sub="avg score /10" color={parseFloat(avgDisc) >= 7 ? C.green : C.amber} />
+      {/* Section tabs */}
+      <div style={{ display: "flex", gap: 6, marginBottom: 16, overflowX: "auto", paddingBottom: 2 }}>
+        {sections.map(s => (
+          <button key={s.id} onClick={() => setSection(s.id)} style={{
+            padding: "7px 14px", borderRadius: 99, whiteSpace: "nowrap",
+            border: `1px solid ${section === s.id ? C.accent + "60" : C.border}`,
+            background: section === s.id ? C.accentSoft : "transparent",
+            color: section === s.id ? C.accent : C.textMuted,
+            fontFamily: "'Outfit',sans-serif", fontSize: 12, fontWeight: section === s.id ? 700 : 400,
+            cursor: "pointer", transition: "all 0.15s", display: "flex", alignItems: "center", gap: 5,
+          }}><span>{s.icon}</span>{s.label}</button>
+        ))}
       </div>
 
-      <Card>
-        <CardTitle icon="📈" title="Equity Curve" color={C.green} />
-        <ResponsiveContainer width="100%" height={180}>
-          <AreaChart data={cumData} margin={{ top: 5, right: 5, bottom: 0, left: 0 }}>
-            <defs><linearGradient id="gradEq" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={isProfit ? C.green : C.red} stopOpacity={0.25} /><stop offset="100%" stopColor={isProfit ? C.green : C.red} stopOpacity={0} /></linearGradient></defs>
-            <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
-            <XAxis dataKey="name" tick={TK} /><YAxis tick={TK} />
-            <ReferenceLine y={0} stroke={C.borderMid} strokeDasharray="4 4" />
-            <Tooltip {...ttStyle} />
-            <Area type="monotone" dataKey="cum" stroke={isProfit ? C.green : C.red} strokeWidth={2.5} fill="url(#gradEq)" dot={false} />
-          </AreaChart>
-        </ResponsiveContainer>
-      </Card>
-
-      <Card>
-        <CardTitle icon="🗓️" title="P&L by Period" color={C.accent} />
-        <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
-          {["day", "week", "month"].map(p => (
-            <button key={p} onClick={() => setPeriodTab(p)} style={{ padding: "5px 14px", borderRadius: 99, border: `1px solid ${periodTab === p ? C.accent + "60" : C.border}`, background: periodTab === p ? C.accentSoft : "transparent", color: periodTab === p ? C.accent : C.textMuted, fontFamily: "'Outfit',sans-serif", fontSize: 12, fontWeight: periodTab === p ? 600 : 400, cursor: "pointer", transition: "all 0.15s", textTransform: "capitalize" }}>{p}</button>
-          ))}
-        </div>
-        <PeriodTable rows={{ day: dayRows, week: weekRows, month: monthRows }[periodTab]} columns={["Period", "P&L (AUD)", "% Acct", "Trades", "Wins"]} />
-      </Card>
-
-      <Card>
-        <CardTitle icon="📉" title="Daily Drawdown %" color={C.red} />
-        <ResponsiveContainer width="100%" height={150}>
-          <AreaChart data={dailyData} margin={{ top: 5, right: 5, bottom: 0, left: 0 }}>
-            <defs><linearGradient id="gradDD" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={C.red} stopOpacity={0.3} /><stop offset="100%" stopColor={C.red} stopOpacity={0} /></linearGradient></defs>
-            <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
-            <XAxis dataKey="date" tick={TK} /><YAxis tick={TK} />
-            <ReferenceLine y={0} stroke={C.borderMid} />
-            <Tooltip {...ttStyle} formatter={v => [`${v}%`, "Drawdown"]} />
-            <Area type="monotone" dataKey="dd" stroke={C.red} strokeWidth={2} fill="url(#gradDD)" dot={false} />
-          </AreaChart>
-        </ResponsiveContainer>
-      </Card>
-
-      <Card>
-        <CardTitle icon="📆" title="Trades & P&L by Day of Week" color={C.blue} />
-        <ResponsiveContainer width="100%" height={150}>
-          <BarChart data={dowData} margin={{ top: 5, right: 5, bottom: 0, left: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
-            <XAxis dataKey="day" tick={TK} />
-            <YAxis yAxisId="left" tick={TK} /><YAxis yAxisId="right" orientation="right" tick={TK} />
-            <Tooltip {...ttStyle} />
-            <Bar yAxisId="left" dataKey="count" fill={C.accent} fillOpacity={0.7} radius={[3, 3, 0, 0]} name="Trades" />
-            <Bar yAxisId="right" dataKey="pnl" radius={[3, 3, 0, 0]} name="P&L" shape={({ x, y, width, height, value }) => { const col = value >= 0 ? C.green : C.red; const h = Math.abs(height), yy = value >= 0 ? y : y + height; return <rect x={x} y={yy} width={width} height={h} fill={col} rx={3} fillOpacity={0.75} />; }} />
-          </BarChart>
-        </ResponsiveContainer>
-        <div style={{ display: "flex", gap: 16, marginTop: 10, justifyContent: "center" }}>
-          {[["Trades", C.accent], ["P&L", C.green]].map(([l, c]) => <div key={l} style={{ display: "flex", alignItems: "center", gap: 5 }}><div style={{ width: 8, height: 8, borderRadius: 2, background: c }} /><span style={{ fontSize: 11, color: C.textMuted, fontFamily: "'Outfit',sans-serif" }}>{l}</span></div>)}
-        </div>
-      </Card>
-
-      {Object.keys(sessionMap).length > 0 && (
-        <Card>
-          <CardTitle icon="🌍" title="Performance by Session" color={C.amber} />
-          {Object.entries(sessionMap).map(([s, d]) => {
-            const col = SESSION_C[s] || C.accent, sWr = d.count ? ((d.wins / d.count) * 100).toFixed(0) : 0;
-            return <div key={s} style={{ marginBottom: 14 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5 }}>
-                <span style={{ fontSize: 12.5, color: col, fontFamily: "'Outfit',sans-serif", fontWeight: 600 }}>{s}</span>
-                <div style={{ display: "flex", gap: 12 }}>
-                  <span style={{ fontSize: 12, color: d.pnl >= 0 ? C.green : C.red, fontFamily: "'Outfit',sans-serif", fontWeight: 600 }}>{d.pnl >= 0 ? "+" : ""}{d.pnl.toFixed(2)} AUD</span>
-                  <span style={{ fontSize: 12, color: C.textMuted, fontFamily: "'Outfit',sans-serif" }}>{sWr}% WR · {d.count}t</span>
-                </div>
-              </div>
-              <div style={{ height: 6, background: C.border, borderRadius: 3 }}><div style={{ height: 6, width: `${sWr}%`, background: `linear-gradient(90deg,${col}70,${col})`, borderRadius: 3 }} /></div>
-            </div>;
-          })}
-        </Card>
-      )}
-
-      {Object.keys(instrMap).length > 0 && (
-        <Card>
-          <CardTitle icon="💹" title="Performance by Instrument" color={C.green} />
-          {Object.entries(instrMap).map(([s, d]) => {
-            const iWr = d.count ? ((d.wins / d.count) * 100).toFixed(0) : 0;
-            return <div key={s} style={{ marginBottom: 14 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5 }}>
-                <span style={{ fontSize: 12.5, color: C.accent, fontFamily: "'Outfit',sans-serif", fontWeight: 600 }}>{s}</span>
-                <div style={{ display: "flex", gap: 12 }}>
-                  <span style={{ fontSize: 12, color: d.pnl >= 0 ? C.green : C.red, fontFamily: "'Outfit',sans-serif", fontWeight: 600 }}>{d.pnl >= 0 ? "+" : ""}{d.pnl.toFixed(2)} AUD</span>
-                  <span style={{ fontSize: 12, color: C.textMuted, fontFamily: "'Outfit',sans-serif" }}>{iWr}% WR · {d.count}t</span>
-                </div>
-              </div>
-              <div style={{ height: 6, background: C.border, borderRadius: 3 }}><div style={{ height: 6, width: `${iWr}%`, background: `linear-gradient(90deg,${C.accent}70,${C.accent})`, borderRadius: 3 }} /></div>
-            </div>;
-          })}
-        </Card>
-      )}
-
-      <Card>
-        <CardTitle icon="↕️" title="Long vs Short" color={C.blue} />
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          {["Long", "Short"].map(d => {
-            const dd = dirMap[d]; if (!dd.count) return <div key={d} style={{ background: C.border + "20", borderRadius: 10, padding: 14, color: C.textMuted, fontFamily: "'Outfit',sans-serif", fontSize: 12 }}>No {d} trades</div>;
-            const dWr = ((dd.wins / dd.count) * 100).toFixed(0), col = d === "Long" ? C.green : C.red;
-            return <div key={d} style={{ background: `${col}0d`, border: `1px solid ${col}25`, borderRadius: 12, padding: "14px 16px" }}>
-              <div style={{ fontSize: 10.5, color: col, fontFamily: "'Outfit',sans-serif", fontWeight: 700, marginBottom: 6, letterSpacing: 0.7, textTransform: "uppercase" }}>{d}</div>
-              <div style={{ fontSize: 22, fontWeight: 800, color: col, fontFamily: "'Outfit',sans-serif" }}>{dWr}%</div>
-              <div style={{ fontSize: 11.5, color: C.textMuted, fontFamily: "'Outfit',sans-serif", marginTop: 3 }}>{dd.count} trades · {dd.pnl >= 0 ? "+" : ""}{dd.pnl.toFixed(2)} AUD</div>
-            </div>;
-          })}
-        </div>
-      </Card>
-
-      {(alignedT.length > 0 || notAlignedT.length > 0) && (
-        <Card>
-          <CardTitle icon="🎯" title="Timeframe Alignment Impact" color={C.purple} />
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            {[["Aligned", alignedT, C.green], ["Not Aligned", notAlignedT, C.red]].map(([label, ts, col]) => {
-              const wr = ts.length ? ((ts.filter(t => t.result === "Win").length / ts.length) * 100).toFixed(0) : null;
-              const pnl = ts.reduce((a, t) => a + (parseFloat(t.pnl) || 0), 0);
-              return <div key={label} style={{ background: `${col}0d`, border: `1px solid ${col}25`, borderRadius: 12, padding: "14px 16px" }}>
-                <div style={{ fontSize: 10.5, color: col, fontFamily: "'Outfit',sans-serif", fontWeight: 700, marginBottom: 6, letterSpacing: 0.7, textTransform: "uppercase" }}>{label}</div>
-                <div style={{ fontSize: 22, fontWeight: 800, color: col, fontFamily: "'Outfit',sans-serif" }}>{wr ? `${wr}%` : "—"}</div>
-                <div style={{ fontSize: 11.5, color: C.textMuted, fontFamily: "'Outfit',sans-serif", marginTop: 3 }}>{ts.length} trades · {pnl >= 0 ? "+" : ""}{pnl.toFixed(2)} AUD</div>
-              </div>;
-            })}
+      {/* ── DASHBOARD ── */}
+      {section === "dashboard" && (
+        <>
+          {/* Stat tiles - 3 column */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 12 }}>
+            <BigStat icon="💰" label="Net P&L" value={`${isProfit ? "+" : ""}${totalPnl.toFixed(0)}`} sub="AUD" color={isProfit ? C.green : C.red} />
+            <BigStat icon="🎯" label="Win Rate" value={`${wr}%`} sub={`${wins.length}W ${losses.length}L`} color={parseFloat(wr) >= 50 ? C.green : C.red} />
+            <BigStat icon="⚡" label="Profit Factor" value={profitFactor} sub="ratio" color={parseFloat(profitFactor) >= 1.5 ? C.green : parseFloat(profitFactor) >= 1 ? C.amber : C.red} />
           </div>
-        </Card>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 14 }}>
+            <BigStat icon="📐" label="Expectancy" value={`${parseFloat(expectancy) >= 0 ? "+" : ""}${expectancy}`} sub="AUD/trade" color={parseFloat(expectancy) >= 0 ? C.green : C.red} />
+            <BigStat icon="📉" label="Max DD" value={`${maxDD.toFixed(1)}%`} sub="from peak" color={C.red} />
+            <BigStat icon="🔥" label="Streak" value={streak > 0 ? `${streak}W` : `${Math.abs(streak)}L`} sub="current" color={streak > 0 ? C.green : C.red} />
+          </div>
+
+          {/* Equity Curve */}
+          <Card>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: C.text, fontFamily: "'Outfit',sans-serif" }}>Cumulative P&L</span>
+              <span style={{ fontSize: 12, fontWeight: 700, color: isProfit ? C.green : C.red, fontFamily: "'Outfit',sans-serif" }}>{isProfit ? "+" : ""}{totalPnl.toFixed(2)} AUD</span>
+            </div>
+            <ResponsiveContainer width="100%" height={160}>
+              <AreaChart data={cumData} margin={{ top: 5, right: 5, bottom: 0, left: 0 }}>
+                <defs>
+                  <linearGradient id="gradEq" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={isProfit ? C.green : C.red} stopOpacity={0.3} />
+                    <stop offset="100%" stopColor={isProfit ? C.green : C.red} stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
+                <XAxis dataKey="name" tick={TK} />
+                <YAxis tick={TK} />
+                <ReferenceLine y={0} stroke={C.borderMid} strokeDasharray="4 4" />
+                <Tooltip {...ttStyle} />
+                <Area type="monotone" dataKey="cum" stroke={isProfit ? C.green : C.red} strokeWidth={2.5} fill="url(#gradEq)" dot={false} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </Card>
+
+          {/* Daily P&L bars */}
+          <Card>
+            <div style={{ marginBottom: 12 }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: C.text, fontFamily: "'Outfit',sans-serif" }}>Daily Net P&L</span>
+            </div>
+            <ResponsiveContainer width="100%" height={130}>
+              <BarChart data={dailyData} margin={{ top: 5, right: 5, bottom: 0, left: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
+                <XAxis dataKey="date" tick={TK} />
+                <YAxis tick={TK} />
+                <ReferenceLine y={0} stroke={C.borderMid} />
+                <Tooltip {...ttStyle} />
+                <Bar dataKey="pnl" radius={[3, 3, 0, 0]} name="P&L"
+                  shape={({ x, y, width, height, value }) => {
+                    const col = value >= 0 ? C.green : C.red;
+                    const h = Math.abs(height), yy = value >= 0 ? y : y + height;
+                    return <rect x={x} y={yy} width={width} height={h} fill={col} rx={3} fillOpacity={0.85} />;
+                  }}
+                />
+              </BarChart>
+            </ResponsiveContainer>
+          </Card>
+
+          {/* Calendar */}
+          <CalendarView trades={trades} onDayClick={date => {
+            const dayTrades = trades.filter(t => t.date === date);
+            if (dayTrades.length) setDayModal({ date, trades: dayTrades });
+          }} />
+
+          {/* Recent trades */}
+          <RecentTradesList trades={trades} onEdit={onEditTrade} />
+        </>
       )}
 
-      <Card>
-        <CardTitle icon="🧠" title="Psychology Insights" color={C.purple} />
-        {Object.keys(emotionStats).length > 0 && (
-          <div style={{ marginBottom: 18 }}>
-            <Label>Win Rate by Emotional State</Label>
-            {Object.entries(emotionStats).map(([e, s]) => <WinRateBar key={e} label={e} wr={s.wr} n={s.n} color={EMOTION_C[e] || C.accent} />)}
-          </div>
-        )}
-        <Divider label="Behaviour Flags" />
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          {[["Chasing Losses", chasing, C.red], ["Extended TP", extended, C.amber]].map(([label, ts, col]) => {
-            const pnl = ts.reduce((a, t) => a + (parseFloat(t.pnl) || 0), 0);
-            return <div key={label} style={{ background: `${col}0d`, border: `1px solid ${col}25`, borderRadius: 12, padding: "14px 16px" }}>
-              <div style={{ fontSize: 10.5, color: col, fontFamily: "'Outfit',sans-serif", fontWeight: 700, marginBottom: 7, letterSpacing: 0.7, textTransform: "uppercase" }}>{label}</div>
-              <div style={{ fontSize: 26, fontWeight: 800, color: col, fontFamily: "'Outfit',sans-serif" }}>{ts.length}</div>
-              <div style={{ fontSize: 11.5, color: C.textMuted, fontFamily: "'Outfit',sans-serif", marginTop: 3 }}>{ts.length > 0 ? `${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} AUD` : "No data yet"}</div>
-            </div>;
-          })}
-        </div>
-      </Card>
+      {/* ── CHARTS ── */}
+      {section === "charts" && (
+        <>
+          <Card>
+            <CardTitle icon="📉" title="Daily Drawdown %" color={C.red} />
+            <ResponsiveContainer width="100%" height={150}>
+              <AreaChart data={dailyData} margin={{ top: 5, right: 5, bottom: 0, left: 0 }}>
+                <defs><linearGradient id="gradDD" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={C.red} stopOpacity={0.3} /><stop offset="100%" stopColor={C.red} stopOpacity={0} /></linearGradient></defs>
+                <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
+                <XAxis dataKey="date" tick={TK} /><YAxis tick={TK} />
+                <ReferenceLine y={0} stroke={C.borderMid} />
+                <Tooltip {...ttStyle} formatter={v => [`${v}%`, "Drawdown"]} />
+                <Area type="monotone" dataKey="dd" stroke={C.red} strokeWidth={2} fill="url(#gradDD)" dot={false} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </Card>
+
+          {/* P&L by week table */}
+          <Card>
+            <CardTitle icon="🗓️" title="Weekly P&L" color={C.accent} />
+            <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "'Outfit',sans-serif", fontSize: 12 }}>
+              <thead>
+                <tr>{["Week", "P&L (AUD)", "% Acct", "Trades", "Wins"].map(c => <th key={c} style={{ textAlign: c === "Week" ? "left" : "right", padding: "6px 8px", color: C.textMuted, fontWeight: 600, fontSize: 10.5, letterSpacing: 0.5, textTransform: "uppercase", borderBottom: `1px solid ${C.border}` }}>{c}</th>)}</tr>
+              </thead>
+              <tbody>
+                {Object.entries(byWeek).sort().map(([w, ts]) => {
+                  const pnl = ts.reduce((a, t) => a + (parseFloat(t.pnl) || 0), 0);
+                  const pct = (pnl / deposit * 100).toFixed(2);
+                  const ww = ts.filter(t => t.result === "Win").length;
+                  return <tr key={w} style={{ borderBottom: `1px solid ${C.border}20` }}>
+                    <td style={{ padding: "8px 8px", color: C.textSub }}>{w}</td>
+                    <td style={{ padding: "8px 8px", textAlign: "right", color: pnl >= 0 ? C.green : C.red, fontWeight: 600 }}>{pnl >= 0 ? "+" : ""}{pnl.toFixed(2)}</td>
+                    <td style={{ padding: "8px 8px", textAlign: "right", color: parseFloat(pct) >= 0 ? C.green : C.red, fontWeight: 600 }}>{parseFloat(pct) >= 0 ? "+" : ""}{pct}%</td>
+                    <td style={{ padding: "8px 8px", textAlign: "right", color: C.textSub }}>{ts.length}</td>
+                    <td style={{ padding: "8px 8px", textAlign: "right", color: C.textSub }}>{ww}</td>
+                  </tr>;
+                })}
+              </tbody>
+            </table>
+          </Card>
+
+          {/* Monthly table */}
+          <Card>
+            <CardTitle icon="📅" title="Monthly P&L" color={C.blue} />
+            <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "'Outfit',sans-serif", fontSize: 12 }}>
+              <thead>
+                <tr>{["Month", "P&L (AUD)", "% Acct", "Trades", "Wins"].map(c => <th key={c} style={{ textAlign: c === "Month" ? "left" : "right", padding: "6px 8px", color: C.textMuted, fontWeight: 600, fontSize: 10.5, letterSpacing: 0.5, textTransform: "uppercase", borderBottom: `1px solid ${C.border}` }}>{c}</th>)}</tr>
+              </thead>
+              <tbody>
+                {Object.entries(byMonth).sort().map(([m, ts]) => {
+                  const pnl = ts.reduce((a, t) => a + (parseFloat(t.pnl) || 0), 0);
+                  const pct = (pnl / deposit * 100).toFixed(2);
+                  const ww = ts.filter(t => t.result === "Win").length;
+                  return <tr key={m} style={{ borderBottom: `1px solid ${C.border}20` }}>
+                    <td style={{ padding: "8px 8px", color: C.textSub }}>{m}</td>
+                    <td style={{ padding: "8px 8px", textAlign: "right", color: pnl >= 0 ? C.green : C.red, fontWeight: 600 }}>{pnl >= 0 ? "+" : ""}{pnl.toFixed(2)}</td>
+                    <td style={{ padding: "8px 8px", textAlign: "right", color: parseFloat(pct) >= 0 ? C.green : C.red, fontWeight: 600 }}>{parseFloat(pct) >= 0 ? "+" : ""}{pct}%</td>
+                    <td style={{ padding: "8px 8px", textAlign: "right", color: C.textSub }}>{ts.length}</td>
+                    <td style={{ padding: "8px 8px", textAlign: "right", color: C.textSub }}>{ww}</td>
+                  </tr>;
+                })}
+              </tbody>
+            </table>
+          </Card>
+        </>
+      )}
+
+      {/* ── BREAKDOWN ── */}
+      {section === "breakdown" && (
+        <>
+          {Object.keys(sessionMap).length > 0 && (
+            <Card>
+              <CardTitle icon="🌍" title="By Session" color={C.amber} />
+              {Object.entries(sessionMap).map(([s, d]) => {
+                const col = SESSION_C[s] || C.accent, sWr = d.count ? ((d.wins / d.count) * 100).toFixed(0) : 0;
+                return <div key={s} style={{ marginBottom: 14 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5 }}>
+                    <span style={{ fontSize: 12.5, color: col, fontFamily: "'Outfit',sans-serif", fontWeight: 600 }}>{s}</span>
+                    <div style={{ display: "flex", gap: 12 }}>
+                      <span style={{ fontSize: 12, color: d.pnl >= 0 ? C.green : C.red, fontFamily: "'Outfit',sans-serif", fontWeight: 600 }}>{d.pnl >= 0 ? "+" : ""}{d.pnl.toFixed(2)} AUD</span>
+                      <span style={{ fontSize: 12, color: C.textMuted, fontFamily: "'Outfit',sans-serif" }}>{sWr}% · {d.count}t</span>
+                    </div>
+                  </div>
+                  <div style={{ height: 6, background: C.border, borderRadius: 3 }}><div style={{ height: 6, width: `${sWr}%`, background: `linear-gradient(90deg,${col}70,${col})`, borderRadius: 3 }} /></div>
+                </div>;
+              })}
+            </Card>
+          )}
+
+          {Object.keys(instrMap).length > 0 && (
+            <Card>
+              <CardTitle icon="💹" title="By Instrument" color={C.green} />
+              {Object.entries(instrMap).map(([s, d]) => {
+                const iWr = d.count ? ((d.wins / d.count) * 100).toFixed(0) : 0;
+                return <div key={s} style={{ marginBottom: 14 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5 }}>
+                    <span style={{ fontSize: 12.5, color: C.accent, fontFamily: "'Outfit',sans-serif", fontWeight: 600 }}>{s}</span>
+                    <div style={{ display: "flex", gap: 12 }}>
+                      <span style={{ fontSize: 12, color: d.pnl >= 0 ? C.green : C.red, fontFamily: "'Outfit',sans-serif", fontWeight: 600 }}>{d.pnl >= 0 ? "+" : ""}{d.pnl.toFixed(2)} AUD</span>
+                      <span style={{ fontSize: 12, color: C.textMuted, fontFamily: "'Outfit',sans-serif" }}>{iWr}% · {d.count}t</span>
+                    </div>
+                  </div>
+                  <div style={{ height: 6, background: C.border, borderRadius: 3 }}><div style={{ height: 6, width: `${iWr}%`, background: `linear-gradient(90deg,${C.accent}70,${C.accent})`, borderRadius: 3 }} /></div>
+                </div>;
+              })}
+            </Card>
+          )}
+
+          <Card>
+            <CardTitle icon="↕️" title="Long vs Short" color={C.blue} />
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              {["Long", "Short"].map(d => {
+                const dd = dirMap[d];
+                if (!dd.count) return <div key={d} style={{ background: C.border + "20", borderRadius: 10, padding: 14, color: C.textMuted, fontFamily: "'Outfit',sans-serif", fontSize: 12 }}>No {d} trades</div>;
+                const dWr = ((dd.wins / dd.count) * 100).toFixed(0), col = d === "Long" ? C.green : C.red;
+                return <div key={d} style={{ background: `${col}0d`, border: `1px solid ${col}25`, borderRadius: 12, padding: "14px 16px" }}>
+                  <div style={{ fontSize: 10.5, color: col, fontFamily: "'Outfit',sans-serif", fontWeight: 700, marginBottom: 6, letterSpacing: 0.7, textTransform: "uppercase" }}>{d}</div>
+                  <div style={{ fontSize: 22, fontWeight: 800, color: col, fontFamily: "'Outfit',sans-serif" }}>{dWr}%</div>
+                  <div style={{ fontSize: 11.5, color: C.textMuted, fontFamily: "'Outfit',sans-serif", marginTop: 3 }}>{dd.count} trades · {dd.pnl >= 0 ? "+" : ""}{dd.pnl.toFixed(2)} AUD</div>
+                </div>;
+              })}
+            </div>
+          </Card>
+
+          {(alignedT.length > 0 || notAlignedT.length > 0) && (
+            <Card>
+              <CardTitle icon="🎯" title="Timeframe Alignment Impact" color={C.purple} />
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                {[["Aligned", alignedT, C.green], ["Not Aligned", notAlignedT, C.red]].map(([label, ts, col]) => {
+                  const wr = ts.length ? ((ts.filter(t => t.result === "Win").length / ts.length) * 100).toFixed(0) : null;
+                  const pnl = ts.reduce((a, t) => a + (parseFloat(t.pnl) || 0), 0);
+                  return <div key={label} style={{ background: `${col}0d`, border: `1px solid ${col}25`, borderRadius: 12, padding: "14px 16px" }}>
+                    <div style={{ fontSize: 10.5, color: col, fontFamily: "'Outfit',sans-serif", fontWeight: 700, marginBottom: 6, letterSpacing: 0.7, textTransform: "uppercase" }}>{label}</div>
+                    <div style={{ fontSize: 22, fontWeight: 800, color: col, fontFamily: "'Outfit',sans-serif" }}>{wr ? `${wr}%` : "—"}</div>
+                    <div style={{ fontSize: 11.5, color: C.textMuted, fontFamily: "'Outfit',sans-serif", marginTop: 3 }}>{ts.length} trades · {pnl >= 0 ? "+" : ""}{pnl.toFixed(2)} AUD</div>
+                  </div>;
+                })}
+              </div>
+            </Card>
+          )}
+        </>
+      )}
+
+      {/* ── PSYCHOLOGY ── */}
+      {section === "psychology" && (
+        <>
+          <Card>
+            <CardTitle icon="🧠" title="Win Rate by Emotion" color={C.purple} />
+            {Object.keys(emotionStats).length > 0
+              ? Object.entries(emotionStats).map(([e, s]) => <WinRateBar key={e} label={e} wr={s.wr} n={s.n} color={EMOTION_C[e] || C.accent} />)
+              : <div style={{ color: C.textMuted, fontFamily: "'Outfit',sans-serif", fontSize: 13 }}>No emotion data yet</div>
+            }
+          </Card>
+
+          <Card>
+            <CardTitle icon="⚠️" title="Discipline Score Trend" color={C.amber} />
+            <ResponsiveContainer width="100%" height={140}>
+              <AreaChart data={sorted.filter(t => t.disciplineScore).map((t, i) => ({ n: i + 1, score: Number(t.disciplineScore) }))} margin={{ top: 5, right: 5, bottom: 0, left: 0 }}>
+                <defs><linearGradient id="gradDisc" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={C.amber} stopOpacity={0.3} /><stop offset="100%" stopColor={C.amber} stopOpacity={0} /></linearGradient></defs>
+                <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
+                <XAxis dataKey="n" tick={TK} /><YAxis domain={[0, 10]} tick={TK} />
+                <Tooltip {...ttStyle} />
+                <Area type="monotone" dataKey="score" stroke={C.amber} strokeWidth={2} fill="url(#gradDisc)" dot={{ fill: C.amber, r: 3 }} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </Card>
+
+          <Card>
+            <CardTitle icon="🚩" title="Behaviour Flags" color={C.red} />
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              {[["Chasing Losses", chasing, C.red], ["Extended TP", extended, C.amber]].map(([label, ts, col]) => {
+                const pnl = ts.reduce((a, t) => a + (parseFloat(t.pnl) || 0), 0);
+                return <div key={label} style={{ background: `${col}0d`, border: `1px solid ${col}25`, borderRadius: 12, padding: "14px 16px" }}>
+                  <div style={{ fontSize: 10.5, color: col, fontFamily: "'Outfit',sans-serif", fontWeight: 700, marginBottom: 7, letterSpacing: 0.7, textTransform: "uppercase" }}>{label}</div>
+                  <div style={{ fontSize: 26, fontWeight: 800, color: col, fontFamily: "'Outfit',sans-serif" }}>{ts.length}</div>
+                  <div style={{ fontSize: 11.5, color: C.textMuted, fontFamily: "'Outfit',sans-serif", marginTop: 3 }}>{ts.length > 0 ? `${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} AUD` : "None yet"}</div>
+                </div>;
+              })}
+            </div>
+          </Card>
+        </>
+      )}
+
+      {dayModal && <DayModal date={dayModal.date} trades={dayModal.trades} onClose={() => setDayModal(null)} />}
     </div>
   );
 }
@@ -737,6 +1130,7 @@ function TradeLog({ trades, onEdit, onDelete }) {
                   {t.disciplineScore && <span style={{ fontSize: 11, padding: "2px 9px", borderRadius: 20, background: C.accentSoft, color: C.accent, fontFamily: "'Outfit',sans-serif" }}>🎯 {t.disciplineScore}/10</span>}
                 </div>
                 {t.wentWrong && <div style={{ marginTop: 9, fontSize: 12, color: C.textMuted, fontFamily: "'Outfit',sans-serif", fontStyle: "italic", lineHeight: 1.5 }}>"{t.wentWrong}"</div>}
+                {t.chartUrl && <ChartThumb url={t.chartUrl} />}
               </div>
               <div style={{ textAlign: "right", marginLeft: 14, flexShrink: 0 }}>
                 <div style={{ fontSize: 22, fontWeight: 800, color: col, fontFamily: "'Outfit',sans-serif", letterSpacing: -0.5 }}>{pnl >= 0 ? "+" : ""}{pnl.toFixed(2)}</div>
@@ -761,6 +1155,7 @@ export default function App() {
   const [tab, setTab] = useState("analytics");
   const [editTrade, setEditTrade] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [accountSize, setAccountSize] = useState(() => localStorage.getItem('tj_account_size') || '1000');
 
   // Auth listener
   useEffect(() => {
@@ -810,6 +1205,7 @@ export default function App() {
     went_well:           trade.wentWell,
     went_wrong:          trade.wentWrong,
     doing_differently:   trade.doingDifferently,
+    chart_url:           trade.chartUrl,
   });
 
   const toCamel = (t) => ({
@@ -847,6 +1243,7 @@ export default function App() {
     wentWell:          t.went_well,
     wentWrong:         t.went_wrong,
     doingDifferently:  t.doing_differently,
+    chartUrl:          t.chart_url,
   });
 
   const loadTrades = async () => {
@@ -929,6 +1326,16 @@ export default function App() {
                     {winRate && <div style={{ fontSize: 11, color: C.textMuted, fontFamily: "'Outfit',sans-serif" }}>{winRate}% win · {trades.length} trades</div>}
                   </div>
                 )}
+                <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                  <span style={{ fontSize: 10.5, color: C.textMuted, fontFamily: "'Outfit',sans-serif" }}>$</span>
+                  <input
+                    type="number"
+                    value={accountSize}
+                    onChange={e => { setAccountSize(e.target.value); localStorage.setItem('tj_account_size', e.target.value); }}
+                    placeholder="Account"
+                    style={{ width: 72, background: C.bg, border: `1px solid ${C.border}`, borderRadius: 7, padding: "4px 7px", color: C.textSub, fontFamily: "'Outfit',sans-serif", fontSize: 11.5, outline: "none" }}
+                  />
+                </div>
                 <button onClick={handleSignOut} style={{ fontSize: 11.5, padding: "5px 12px", borderRadius: 7, background: "transparent", border: `1px solid ${C.border}`, color: C.textMuted, cursor: "pointer", fontFamily: "'Outfit',sans-serif" }}>Sign out</button>
               </div>
             </div>
@@ -945,7 +1352,7 @@ export default function App() {
 
         <div style={{ maxWidth: 660, margin: "0 auto", padding: "18px 16px" }}>
           {tab === "log" && <TradeForm onSave={handleSave} editTrade={editTrade} onCancelEdit={() => { setEditTrade(null); setTab("trades"); }} />}
-          {tab === "analytics" && <Analytics trades={trades} />}
+          {tab === "analytics" && <Analytics trades={trades} accountSize={accountSize} onEditTrade={t => { setEditTrade(t); setTab("log"); }} />}
           {tab === "trades" && <TradeLog trades={trades} onEdit={t => { setEditTrade(t); setTab("log"); }} onDelete={handleDelete} />}
         </div>
       </div>
